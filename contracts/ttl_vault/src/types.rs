@@ -259,6 +259,17 @@ pub struct WithdrawalScheduleEntry {
 pub struct ConditionalAcceptanceEntry {
     pub conditions: String,
     pub approved_by_owner: bool,
+    pub acceptance_deadline: Option<u64>,
+}
+
+/// Activity log entry for forensic audit trail
+#[contracttype]
+#[derive(Clone)]
+pub struct ActivityLogEntry {
+    pub action: String,
+    pub caller: Address,
+    pub timestamp: u64,
+    pub details: String,
 }
 
 /// Archived vault info for restoration - Issue #443

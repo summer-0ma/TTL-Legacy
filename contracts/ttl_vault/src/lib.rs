@@ -3293,46 +3293,33 @@ impl TtlVaultContract {
 
     // --- Issue #385: Vault Cloning ---
 
-    /// Clones a vault with a new beneficiary.
+    /// Clones a vault configuration into a new vault.
     ///
-    /// Creates a new vault with the same settings as the original, but with a different beneficiary.
-    /// Only the owner can clone their vault.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment
-    /// * `vault_id` - The original vault ID
-    /// * `caller` - The vault owner (must authorize)
-    /// * `new_beneficiary` - The beneficiary for the cloned vault
-    ///
-    /// # Returns
-    /// The ID of the newly cloned vault
-    ///
-    /// # Errors (panics)
-    /// * Panics if caller is not the vault owner
-    /// * Panics if vault is not in Locked status
-    /// * Panics if owner == new_beneficiary
+    /// Creates a new vault preserving check_in_interval, beneficiaries, metadata,
+    /// token_address, release_condition, and custom_metadata from the source vault.
+    /// Balance and timestamps are reset. Owner-only.
     pub fn clone_vault(
         env: Env,
-        vault_id: u64,
-        caller: Address,
+        source_vault_id: u64,
+        new_owner: Address,
         new_beneficiary: Address,
     ) -> u64 {
-        caller.require_auth();
-        let original = Self::load_vault(&env, vault_id);
-        if caller != original.owner {
+        new_owner.require_auth();
+        let original = Self::load_vault(&env, source_vault_id);
+        if new_owner != original.owner {
             panic_with_error!(&env, ContractError::NotOwner);
         }
         if original.status != ReleaseStatus::Locked {
             panic_with_error!(&env, ContractError::AlreadyReleased);
         }
-        if original.owner == new_beneficiary {
+        if new_owner == new_beneficiary {
             panic_with_error!(&env, ContractError::InvalidBeneficiary);
         }
 
         let new_vault_id = Self::vault_count(env.clone()) + 1;
         let timestamp = env.ledger().timestamp();
         let cloned_vault = Vault {
-            owner: original.owner.clone(),
+            owner: new_owner.clone(),
             beneficiary: new_beneficiary.clone(),
             balance: 0,
             check_in_interval: original.check_in_interval,
@@ -3342,18 +3329,25 @@ impl TtlVaultContract {
             beneficiaries: original.beneficiaries.clone(),
             metadata: original.metadata.clone(),
             token_address: original.token_address.clone(),
-            recovery_contact: None,
+            custom_metadata: original.custom_metadata.clone(),
+            is_paused: false,
+            release_condition: original.release_condition.clone(),
+            parent_vault_id: Some(source_vault_id),
+            passkey_hash: None,
+            max_deposit_amount: original.max_deposit_amount,
+            withdrawal_approval_threshold: original.withdrawal_approval_threshold,
         };
         Self::save_vault(&env, new_vault_id, &cloned_vault);
-        Self::add_owner_vault_id(&env, &original.owner, new_vault_id, original.check_in_interval);
+        Self::add_owner_vault_id(&env, &new_owner, new_vault_id, original.check_in_interval);
         Self::add_beneficiary_vault_id(&env, &new_beneficiary, new_vault_id, original.check_in_interval);
-        
+
         let key = DataKey::VaultCount;
         env.storage().persistent().set(&key, &new_vault_id);
         env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
-        
-        env.events().publish((VAULT_CLONED_TOPIC,), (vault_id, new_vault_id, new_beneficiary));
+
+        Self::append_activity_log(&env, new_vault_id, "clone_vault", &new_owner, "");
+        env.events().publish((VAULT_CLONED_TOPIC,), (source_vault_id, new_vault_id, new_beneficiary));
         new_vault_id
     }
 
@@ -3851,6 +3845,7 @@ impl TtlVaultContract {
         let entry = ConditionalAcceptanceEntry {
             conditions,
             approved_by_owner: false,
+            acceptance_deadline: None,
         };
 
         env.storage()
